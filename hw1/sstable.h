@@ -30,7 +30,6 @@ class SSTable
 private:
     std::string filename;
     BloomFilter *bloom_filter;
-    std::vector<std::pair<std::string, uint64_t>> sparse_index;
     size_t num_entries;
 
 public:
