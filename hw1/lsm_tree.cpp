@@ -1,5 +1,6 @@
 #include "lsm_tree.h"
 #include "utils.h"
+
 #include <fstream>
 #include <iostream>
 #include <chrono>
@@ -74,50 +75,85 @@ void LSMTree::remove(const std::string &key)
 
 std::vector<std::pair<std::string, std::string>> LSMTree::scan(const std::string &start, const std::string &end, int limit)
 {
-    std::map<std::string, std::string> result_map;
+    std::vector<std::unique_ptr<SSTableIterator>> iterators;
 
     for (int t = static_cast<int>(tiers.size()) - 1; t >= 0; t--)
     {
         for (auto it = tiers[t].begin(); it != tiers[t].end(); ++it)
         {
             SSTable *sst = it->get();
-            auto sst_results = sst->scan(start, end, limit);
+            auto iterator = std::make_unique<SSTableIterator>(sst->get_filename(), t);
 
-            for (const auto &[key, value] : sst_results)
+            while (iterator->has_next())
             {
-                if (value != TOMBSTONE)
+                auto [key, value] = iterator->next();
+                if (key >= start && key <= end)
                 {
-                    result_map[key] = value;
+                    iterators.push_back(std::move(iterator));
+                    break;
                 }
-                else
+                else if (key > end)
                 {
-                    result_map.erase(key);
+                    break;
                 }
             }
         }
     }
 
     auto mem_results = memtable->scan(start, end, limit);
-    for (const auto &[key, value] : mem_results)
+
+    using HeapEntry = std::tuple<std::string, std::string, size_t, size_t>;
+    auto cmp = [](const HeapEntry &a, const HeapEntry &b)
     {
-        if (value != TOMBSTONE)
+        if (std::get<0>(a) != std::get<0>(b))
         {
-            result_map[key] = value;
+            return std::get<0>(a) > std::get<0>(b);
         }
-        else
+        return std::get<3>(a) > std::get<3>(b);
+    };
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)> heap(cmp);
+
+    for (size_t i = 0; i < iterators.size(); i++)
+    {
+        if (iterators[i]->has_next())
         {
-            result_map.erase(key);
+            auto [key, value] = iterators[i]->next();
+            heap.push({key, value, i, iterators[i]->get_order()});
         }
     }
 
-    std::vector<std::pair<std::string, std::string>> result;
-    for (const auto &[key, value] : result_map)
+    for (size_t i = 0; i < mem_results.size(); i++)
     {
-        if (key >= start && key <= end)
+        heap.push({mem_results[i].first, mem_results[i].second, iterators.size() + i, tiers.size()});
+    }
+
+    std::vector<std::pair<std::string, std::string>> result;
+    std::string last_key;
+
+    while (!heap.empty() && result.size() < limit)
+    {
+        auto [key, value, iterator_idx, order] = heap.top();
+        heap.pop();
+
+        if (key != last_key)
         {
-            result.emplace_back(key, value);
-            if (result.size() >= limit)
-                break;
+            if (value != TOMBSTONE)
+            {
+                result.emplace_back(key, value);
+            }
+            last_key = key;
+        }
+
+        if (iterator_idx < iterators.size())
+        {
+            if (iterators[iterator_idx]->has_next())
+            {
+                auto [next_key, next_value] = iterators[iterator_idx]->next();
+                if (next_key <= end)
+                {
+                    heap.push({next_key, next_value, iterator_idx, order});
+                }
+            }
         }
     }
 
@@ -190,80 +226,6 @@ void LSMTree::compact_tier(int tier)
         compact_tier(tier + 1);
     }
 }
-
-class SSTableIterator
-{
-private:
-    std::ifstream file;
-    uint32_t num_entries;
-    uint32_t current_entry;
-    uint64_t data_start;
-    size_t file_order;
-
-public:
-    SSTableIterator(const std::string &filename, size_t order) : current_entry(0), file_order(order)
-    {
-        file.open(filename, std::ios::binary);
-        if (file)
-        {
-            uint32_t magic, bloom_offset, index_offset, bloom_size;
-            magic = read_uint32(file);
-            num_entries = read_uint32(file);
-            bloom_offset = read_uint32(file);
-            index_offset = read_uint32(file);
-            bloom_size = read_uint32(file);
-
-            if (magic == SSTABLE_MAGIC)
-            {
-                data_start = sizeof(uint32_t) * 5;
-                file.seekg(data_start);
-            }
-            else
-            {
-                num_entries = 0;
-            }
-        }
-        else
-        {
-            num_entries = 0;
-        }
-    }
-
-    bool has_next() const
-    {
-        return current_entry < num_entries;
-    }
-
-    std::pair<std::string, std::string> next()
-    {
-        if (!has_next())
-        {
-            return {"", ""};
-        }
-
-        uint32_t key_size = read_uint32(file);
-        uint32_t value_size = read_uint32(file);
-
-        std::string key(key_size, '\0');
-        file.read(&key[0], key_size);
-
-        std::string value(value_size, '\0');
-        file.read(&value[0], value_size);
-
-        current_entry++;
-        return {key, value};
-    }
-
-    size_t get_order() const { return file_order; }
-
-    ~SSTableIterator()
-    {
-        if (file.is_open())
-        {
-            file.close();
-        }
-    }
-};
 
 std::unique_ptr<SSTable> LSMTree::merge_sstables(const std::vector<std::unique_ptr<SSTable>> &sstables, const std::string &new_filename)
 {

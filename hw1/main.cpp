@@ -125,6 +125,8 @@ public:
             csv_file << "operation,key,time_us\n";
         }
 
+        long long total_time_us = 0;
+
         for (int i = 0; i < num_ops; i++)
         {
             int operation = op_dist(gen);
@@ -147,6 +149,8 @@ public:
 
             auto op_end = std::chrono::high_resolution_clock::now();
             auto op_duration = std::chrono::duration_cast<std::chrono::microseconds>(op_end - op_start);
+            long long op_time_us = op_duration.count();
+            total_time_us += op_time_us;
 
             if (csv_file.is_open())
             {
@@ -163,7 +167,7 @@ public:
                     op_name = "REMOVE";
                     break;
                 }
-                csv_file << op_name << "," << key << "," << op_duration.count() << "\n";
+                csv_file << op_name << "," << key << "," << op_time_us << "\n";
             }
         }
 
@@ -172,6 +176,9 @@ public:
             csv_file.close();
             LOG_INFO("CSV results saved to: %s", output_file.c_str());
         }
+
+        LOG_INFO("Суммарное время: %lld μs (%.2f ms, %.2f s)", total_time_us, total_time_us / 1000.0, total_time_us / 1000000.0);
+        LOG_INFO("Операций в секунду: %.0f", 1000000.0 / (total_time_us / (double)num_ops));
     }
 };
 

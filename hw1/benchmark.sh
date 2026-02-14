@@ -1,7 +1,6 @@
 #!/bin/bash
 
 echo "LSM Tree Benchmark Runner"
-echo "========================="
 
 NUM_OPS=${1:-1000000}
 SEED=${2:-42}
@@ -31,4 +30,13 @@ wc -l $OUTPUT_FILE
 echo -e "\nFirst 10 lines of CSV results:"
 head -10 $OUTPUT_FILE
 
+echo -e "\nAnalyzing benchmark results..."
 cd ..
+
+if command -v python3 &> /dev/null; then
+    echo "Running Python analyzer..."
+    python3 benchmark_analyzer.py build_bench/$OUTPUT_FILE
+    echo -e "\nAnalysis completed! Check benchmark_plots/ directory for results."
+else
+    echo "Python3 not found, skipping analysis"
+fi

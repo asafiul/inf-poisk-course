@@ -210,3 +210,66 @@ const std::string &SSTable::get_filename() const
 {
     return filename;
 }
+
+SSTableIterator::SSTableIterator(const std::string &filename, size_t order) : current_entry(0), file_order(order)
+{
+    file.open(filename, std::ios::binary);
+    if (file)
+    {
+        uint32_t magic, bloom_offset, index_offset, bloom_size;
+        magic = read_uint32(file);
+        num_entries = read_uint32(file);
+        bloom_offset = read_uint32(file);
+        index_offset = read_uint32(file);
+        bloom_size = read_uint32(file);
+
+        if (magic == SSTABLE_MAGIC)
+        {
+            data_start = sizeof(uint32_t) * 5;
+            file.seekg(data_start);
+        }
+        else
+        {
+            num_entries = 0;
+        }
+    }
+    else
+    {
+        num_entries = 0;
+    }
+}
+
+bool SSTableIterator::has_next() const
+{
+    return current_entry < num_entries;
+}
+
+std::pair<std::string, std::string> SSTableIterator::next()
+{
+    if (!has_next())
+    {
+        return {"", ""};
+    }
+
+    uint32_t key_size = read_uint32(file);
+    uint32_t value_size = read_uint32(file);
+
+    std::string key(key_size, '\0');
+    file.read(&key[0], key_size);
+
+    std::string value(value_size, '\0');
+    file.read(&value[0], value_size);
+
+    current_entry++;
+    return {key, value};
+}
+
+size_t SSTableIterator::get_order() const { return file_order; }
+
+SSTableIterator::~SSTableIterator()
+{
+    if (file.is_open())
+    {
+        file.close();
+    }
+}
